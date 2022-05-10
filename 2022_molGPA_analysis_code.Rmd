@@ -1,0 +1,1094 @@
+---
+title: "Predictors of Lung Adenocarcinoma with Leptomeningeal Metastases: A 2022 Targeted-therapy-assisted molGPA Model"
+author: ""
+date: ""
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(mice) 
+library(survival)
+library(readxl)
+library(randomForestSRC)
+
+########## Step 1: load data ###########
+data <- read_excel("data/MC_data_0830.xls")
+##########-------------- done------------------ ###########
+
+```
+
+# Outline
+
+
+1. Data summary
+2. Missing data
+3. Cox model
++ 3.1 Univariate
++ 3.2 Multivariate
++ 3.3 2021 molGPA and C-index
+4. Random survival forest
+
+
+
+\newpage
+
+# Data summary
+
+The total number of patients is `r (N = dim(data)[1])`. (In the previous dataset, we have 94 patients in total).
+
+There are `r (p = dim(data)[2])` columns in the datasets.
+
+The number of variables (exclude patient ID, time and status) is `r (p = dim(data)[2] - 3)`.
+
+
+
+```{r eval=TRUE, echo=FALSE, fig.align='center', fig.height=4, fig.width=6}
+########## Step 2: sanity check and summary ###########
+# sex: 1: male; 2: female
+# table(data$Sex)
+# 1  2 
+# 47 47 
+h1 = hist(as.integer(data$Sex), ylim = c(0, 100), xlab = "Sex", xaxt='n', main = "", 
+          breaks = 2, col = c("#5F4B8BFF", "#E69A8DFF"), labels = TRUE)
+axis(side=1, at=h1$mids, labels = c("Male", "Female"))
+
+# # age
+# summary(data$Age)
+# # Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# # 28.00   52.00   61.00   59.28   67.75   78.00 
+h2 = hist(data$Age, ylim = c(0, 38), xlab = "Age", xaxt='n', main = "", labels = TRUE, col = "#2C5F2D")
+axis(side=1, at=h2$mids, labels = h2$mids+0.5)
+# 
+# 
+# 
+# # smoking status: 1.smoke; 0: not smoking
+# table(data$Smoke)
+# # 0  1 
+# # 69 25 
+h3 = hist(as.integer(data$Smoke), ylim = c(0, 150), xlab = "Smoking status", xaxt='n', main = "",
+          breaks = 2, col = c("#5F4B8BFF", "#E69A8DFF"), labels = TRUE)
+axis(side=1, at=h3$mids, labels = c("Non-smoker", "Smoker"))
+# 
+# 
+# 
+# # 颅外转移灶: 0无颅外转移, 1伴有颅外转移
+# table(data$`Extracranial metastases`)
+h4 = hist(as.integer(data$`Extracranial metastases`), ylim = c(0, 150),
+          xlab = "Extracranial metastases", xaxt='n', main = "",
+          breaks = 2, col = c("#5F4B8BFF", "#E69A8DFF"), labels = TRUE)
+axis(side=1, at=h4$mids, labels = c("No", "Yes"))
+# 
+# 
+# 
+# #原发肿瘤距脑膜癌时间（月）: 0为以脑膜癌为首发症状
+# summary(data[,6]) 
+h5 = hist(as.numeric(c(data[,6][[1]])), ylim = c(0, 100), xlab = "Median time from cancer diagnosis to leptomeningealcarcinomatosis",
+          main = "",col = "#2C5F2D", labels = TRUE)
+# axis(side=1, at=h5$mids, labels = h5$mids)
+length(which(data[,6][[1]] == 0))
+text(80, 50, "55 out of 173 patients with median time = 0", cex = 1)
+# 
+# 
+# # 原发灶肺癌是否得到控制: （0未控制，1控制）
+# # Extracranial metastasis control
+# table(data$`Extracranial metastasis control`)
+h6= hist(as.integer(data$`Controlled primary tumor`), ylim = c(0, 130),
+         xlab = "Extracranial metastasis control\n(Controlled primary tumor)", xaxt='n', main = "",
+         breaks = 2, col = c("#5F4B8BFF", "#E69A8DFF"), labels = TRUE)
+axis(side=1, at=h6$mids, labels = c("No", "Yes")) 
+# 
+# 
+# # 死亡与否（0存活，1死亡2失访）
+# # Death or not
+# table(data$`Death or not`)
+h6= barplot(table(data$`Death or not`),
+            ylim = c(0, 200),
+            xlab = "Death status", xaxt='n', main = "",
+            col = c("#5F4B8BFF", "#E69A8DFF","#00539CFF"))
+axis(side=1, at= h6,labels = c("Survival", "Death", "Lost to follow-up"))
+text(x = h6, y = table(data$`Death or not`),
+     label =table(data$`Death or not`),
+     pos = 3, cex =1, col = "black")
+# 
+# 
+# 
+# # 生存时间（月）
+# summary(data$`Overall survival `) # NA = 3
+hist(as.integer(data$`Overall survival `) , ylim = c(0, 150),
+     xlab = "Overall survival ",
+     main = "",
+     col = "#2C5F2D", labels = TRUE)
+text(30, 50, paste(sum(is.na(data$`Overall survival `)),"out of 173 patients have NA"), cex = 1)
+# 
+# 
+# # KPS评分分级
+# #1为＜60分（高危），2为60~70（中危）,3为≥80分（低危）
+# table(data$KPS)
+h7= barplot(table(data$KPS),
+            ylim = c(0, 100),
+            xlab = "KPS", xaxt='n', main = "",
+            col = c("#5F4B8BFF", "#E69A8DFF","#00539CFF"))
+text(x = h7, y = table(data$KPS),
+     label =table(data$KPS),
+     pos = 3, cex =1, col = "black")
+axis(side=1, at= h7,labels = c("High risk", "Medium risk", "Low risk"))
+# 
+# 
+# # KPS评分原始分值 !!!!!!!!!????????????
+dt = data$`Karnofsky Performance Status`
+h = barplot(table(dt,  useNA = "ifany"),
+            ylim = c(0, max(table(dt)) + 15),
+            xlab = "Oringal Karnofsky Performance Status",
+            xaxt='n', main = "",
+            col = "#2C5F2D")
+text(x = h, y = table(dt,  useNA = "ifany"),
+     label =table(dt,  useNA = "ifany"),
+     pos = 3, cex =1, col = "black")
+axis(side=1, at=h, labels = unique(dt)[order(unique(dt))])
+# 
+# 
+# # 是否基因突变
+# # 0为无EGFR/ALK突变，1为有基因突变（和后面靶向药物对应，有基因突变就会有靶向药物）
+# table(data$`Gene status`)
+h8= barplot(table(data$`Gene status`),
+            ylim = c(0, 150),
+            xlab = "Gene status",
+            xaxt='n', main = "",
+            col = c("#5F4B8BFF", "#E69A8DFF"))
+text(x = h8, y = table(data$`Gene status`),
+     label =table(data$`Gene status`),
+     pos = 3, cex =1, col = "black")
+axis(side=1, at=h8, labels = c("No", "Yes"))
+
+h8 = barplot(table(data$`Gene status`, useNA = "ifany"),
+             ylim = c(0, max(table(data$`Gene status`,useNA = "ifany")) + 15),
+             xlab = "Gene status",
+             xaxt='n', main = "",
+             col = c("#5F4B8BFF", "#E69A8DFF","#00539CFF"))
+text(x = h8, y = table(data$`Gene status`,useNA = "ifany"),
+     label =table(data$`Gene status`,useNA = "ifany"),
+     pos = 3, cex =1, col = "black")
+axis(side=1, at=h8, labels = c("No", "Yes","NA"))
+# 
+# 
+# # syndrome 
+for (col in 13:31){
+  dt = c(data[,col])[[1]]
+  h = barplot(table(dt),
+              ylim = c(0, max(table(dt)) + 15),
+              xlab = colnames(data)[col],
+              xaxt='n', main = "",
+              col = c("#5F4B8BFF", "#E69A8DFF"))
+  text(x = h, y = table(dt),
+       label =table(dt),
+       pos = 3, cex =1, col = "black")
+  axis(side=1, at=h, labels = c("No", "Yes"))
+}
+# 
+# # RANO神经功能评分
+# # 症状体征总和：国际上对脑膜癌神经功能评判总分（包含年龄、KPS评分，颅外转移与否，脑转移数目，基因改变情况）
+# # RANO Neurological Assessment
+# summary(data$`RANO Neurological Assessment`) 
+hist(as.integer(data$`RANO Neurological Assessment`),
+     ylim = c(0, 100),
+     xlab = "RANO Neurological Assessment",
+     main = "",
+     col = "#2C5F2D", labels = TRUE)
+# 
+# 
+# # 颅内压分级
+# # 1为<200,2为200~300,3为＞300
+# table(data$CSFpressure)
+h = barplot(table(data$CSFpressure),
+            ylim = c(0, max(table(data$CSFpressure)) + 15),
+            xlab = "CSFpressure",
+            xaxt='n', main = "",
+            col = c("#5F4B8BFF", "#E69A8DFF", "#00539CFF"))
+text(x = h, y = table(data$CSFpressure),
+     label =table(data$CSFpressure),
+     pos = 3, cex =1, col = "black")
+axis(side=1, at=h, labels = c("<200", "200~300", ">300"))
+# 
+# 
+# # 腰穿压力（mmH2O）!!!!!!!!!????????????
+# summary(data$`Lumbar puncture pressure`)
+dt = as.numeric(data$`Lumbar puncture pressure`)
+h = hist(dt,
+         xlab = "Oringal lumbar puncture pressure",
+         main = "",
+         ylim = c(0, 50),
+         col = "#2C5F2D", labels = TRUE)
+text(200, 40, paste(sum(is.na(dt)),"out of 173 patients have NA"), cex = 1)
+# 
+# 
+# 
+# # 白细胞. 脑脊液白细胞（>6个为白细胞增高）
+dt = c(data[,35])[[1]]
+# summary(dt)
+hist(data$`White blood cell`,
+     ylim = c(0, 150),
+     xlab = "White blood cell",
+     main = "",
+     col = "#2C5F2D", labels = TRUE)
+text(3000, 40, paste(sum(is.na(dt)),"out of 173 patients have NA"), cex = 1)
+# 
+# 
+# # 蛋白
+dt = c(data[,36])[[1]]
+# summary(dt)
+hist(data$Protein,
+     ylim = c(0, 150),
+     xlab = "Protein",
+     main = "",
+     col = "#2C5F2D", labels = TRUE)
+text(15, 40, paste(sum(is.na(dt)),"out of 173 patients have NA"), cex = 1)
+# 
+# 
+# 
+# # 糖
+dt = c(data[,37])[[1]]
+# summary(dt)
+hist(data$Glucose,
+     ylim = c(0, 55),
+     xlab = "Glucose",
+     main = "",
+     col = "#2C5F2D", labels = TRUE)
+text(6, 40, paste(sum(is.na(dt)),"out of 173 patients have NA"), cex = 1)
+# 
+# 
+# # 氯化物
+dt = c(data[,38])[[1]]
+# summary(dt)
+hist(data$Chloride,
+     ylim = c(0, 55),
+     xlab = "Chloride",
+     main = "",
+     col = "#2C5F2D", labels = TRUE)
+text(110, 50, paste(sum(is.na(dt)),"out of 173 patients have NA"), cex = 1)
+
+# 
+# # 影像学是否阳性
+# # 影像总和：是否阳性(包含脑膜强化、脑转移、脑积水及脊髓受累与否)
+# # Image
+dt = c(data[,39])[[1]]
+h = barplot(table(dt),
+            ylim = c(0, max(table(dt)) + 15),
+            xlab = "If image is positive",
+            xaxt='n', main = "",
+            col = c("#5F4B8BFF", "#E69A8DFF"))
+text(x = h, y = table(dt),
+     label =table(dt),
+     pos = 3, cex =1, col = "black")
+axis(side=1, at=h, labels = c("No", "Yes"))
+# 
+# 
+# # 是否脑膜强化
+dt = c(data[,40])[[1]] # NA = 4
+# table(dt,  useNA = "ifany")
+h = barplot(table(dt,  useNA = "ifany"),
+            ylim = c(0, max(table(dt)) + 15),
+            xlab = "Enhancement",
+            xaxt='n', main = "",
+            col = c("#5F4B8BFF", "#E69A8DFF","#00539CFF"))
+text(x = h, y = table(dt,  useNA = "ifany"),
+     label =table(dt,  useNA = "ifany"),
+     pos = 3, cex =1, col = "black")
+axis(side=1, at=h, labels = c("No", "Yes", "NA"))
+# 
+# 
+# # Brain metastases, No.
+dt = c(data[,41])[[1]]
+# table(dt,  useNA = "ifany")
+h = barplot(table(dt,  useNA = "ifany"),
+            ylim = c(0, max(table(dt)) + 15),
+            xlab = "No. of Brain metastases",
+            xaxt='n', main = "",
+            col = "#2C5F2D")
+text(x = h, y = table(dt,  useNA = "ifany"),
+     label =table(dt,  useNA = "ifany"),
+     pos = 3, cex =1, col = "black")
+axis(side=1, at=h, labels = unique(dt)[order(unique(dt))])
+# 
+# # 脑转移
+# # 0无转移，1有转移
+# # brain metastases
+dt = c(data[,42])[[1]]
+h = barplot(table(dt),
+            ylim = c(0, max(table(dt)) + 15),
+            xlab = "Brain metastases",
+            xaxt='n', main = "",
+            col = c("#5F4B8BFF", "#E69A8DFF"))
+text(x = h, y = table(dt),
+     label =table(dt),
+     pos = 3, cex =1, col = "black")
+axis(side=1, at=h, labels = c("No", "Yes"))
+# 
+# # 脑积水
+# # Hydrocephalus
+dt = c(data[,43])[[1]]
+h = barplot(table(dt),
+            ylim = c(0, max(table(dt)) + 15),
+            xlab = "Hydrocephalus",
+            xaxt='n', main = "",
+            col = c("#5F4B8BFF", "#E69A8DFF"))
+text(x = h, y = table(dt),
+     label =table(dt),
+     pos = 3, cex =1, col = "black")
+axis(side=1, at=h, labels = c("No", "Yes"))
+# 
+# # 脊髓脊膜受累
+# # Enhancement of the spinal membrane
+dt = c(data[,44])[[1]] # NA = 4
+h = barplot(table(dt, useNA = "ifany"),
+            ylim = c(0, max(table(dt,useNA = "ifany")) + 15),
+            xlab = "Enhancement of the spinal membrane",
+            xaxt='n', main = "",
+            col = c("#5F4B8BFF", "#E69A8DFF","#00539CFF"))
+text(x = h, y = table(dt,useNA = "ifany"),
+     label =table(dt,useNA = "ifany"),
+     pos = 3, cex =1, col = "black")
+axis(side=1, at=h, labels = c("No", "Yes","NA"))
+# 
+# # LM之前靶向
+# # Targeted drugs before LM
+dt = c(data[,45])[[1]]
+h = barplot(table(dt),
+            ylim = c(0, max(table(dt)) + 15),
+            xlab = "Targeted drugs before LM",
+            xaxt='n', main = "",
+            col = c("#5F4B8BFF", "#E69A8DFF"))
+text(x = h, y = table(dt),
+     label =table(dt),
+     pos = 3, cex =1, col = "black")
+axis(side=1, at=h, labels = c("No", "Yes"))
+# 
+# # LM之前化疗
+# # Chemotherapy before LM
+dt = c(data[,46])[[1]]
+h = barplot(table(dt),
+            ylim = c(0, max(table(dt)) + 15),
+            xlab = "Chemotherapy before LM",
+            xaxt='n', main = "",
+            col = c("#5F4B8BFF", "#E69A8DFF"))
+text(x = h, y = table(dt),
+     label =table(dt),
+     pos = 3, cex =1, col = "black")
+axis(side=1, at=h, labels = c("No", "Yes"))
+# 
+# # LM前贝伐珠单抗
+# # Bevacizumab before LM
+dt = c(data[,47])[[1]]
+h = barplot(table(dt),
+            ylim = c(0, max(table(dt)) + 15),
+            xlab = "Bevacizumab before LM",
+            xaxt='n', main = "",
+            col = c("#5F4B8BFF", "#E69A8DFF"))
+text(x = h, y = table(dt),
+     label =table(dt),
+     pos = 3, cex =1, col = "black")
+axis(side=1, at=h, labels = c("No", "Yes"))
+# 
+# # LM靶向药物分级
+# # Target stage
+# # 0无靶向药物，1为1代或二代靶向药物，3为3代靶向药物。对预后影响较大
+dt = as.integer(c(data[,48])[[1]])
+# table(dt,  useNA = "ifany")
+h = barplot(table(dt,  useNA = "ifany"),
+            ylim = c(0, max(table(dt)) + 15),
+            xlab = "Target stage",
+            xaxt='n', main = "",
+            col = c("#5F4B8BFF", "#E69A8DFF","#00539CFF","#2D3FD7FF"))
+text(x = h, y = table(dt,  useNA = "ifany"),
+     label =table(dt,  useNA = "ifany"),
+     pos = 3, cex =1, col = "black")
+axis(side=1, at=h, labels = c("No", "1", "2","3"))
+# 
+# 
+# # Chemotherapy after LM
+dt = c(data[,49])[[1]]
+h = barplot(table(dt),
+            ylim = c(0, max(table(dt)) + 15),
+            xlab = "Chemotherapy after LM",
+            xaxt='n', main = "",
+            col = c("#5F4B8BFF", "#E69A8DFF"))
+text(x = h, y = table(dt),
+     label =table(dt),
+     pos = 3, cex =1, col = "black")
+axis(side=1, at=h, labels = c("No", "Yes"))
+# 
+# # Operation after LM
+dt = c(data[,50])[[1]]
+h = barplot(table(dt),
+            ylim = c(0, max(table(dt)) + 15),
+            xlab = "Operation after LM",
+            xaxt='n', main = "",
+            col = c("#5F4B8BFF", "#E69A8DFF"))
+text(x = h, y = table(dt),
+     label =table(dt),
+     pos = 3, cex =1, col = "black")
+axis(side=1, at=h, labels = c("No", "Yes"))
+# 
+# # Becacizumab after LM
+dt = c(data[,51])[[1]]
+h = barplot(table(dt),
+            ylim = c(0, max(table(dt)) + 15),
+            xlab = "Becacizumab after LM",
+            xaxt='n', main = "",
+            col = c("#5F4B8BFF", "#E69A8DFF"))
+text(x = h, y = table(dt),
+     label =table(dt),
+     pos = 3, cex =1, col = "black")
+axis(side=1, at=h, labels = c("No", "Yes"))
+# 
+# # Intrathecal after LM
+dt = c(data[,52])[[1]]
+h = barplot(table(dt),
+            ylim = c(0, max(table(dt)) + 15),
+            xlab = "Intrathecal after LM",
+            xaxt='n', main = "",
+            col = c("#5F4B8BFF", "#E69A8DFF"))
+text(x = h, y = table(dt),
+     label =table(dt),
+     pos = 3, cex =1, col = "black")
+axis(side=1, at=h, labels = c("No", "Yes"))
+# 
+# # Radio therapy after LM
+dt = c(data[,53])[[1]]
+h = barplot(table(dt),
+            ylim = c(0, max(table(dt)) + 15),
+            xlab = "Radio therapy after LM",
+            xaxt='n', main = "",
+            col = c("#5F4B8BFF", "#E69A8DFF"))
+text(x = h, y = table(dt),
+     label =table(dt),
+     pos = 3, cex =1, col = "black")
+axis(side=1, at=h, labels = c("No", "Yes"))
+#
+# # Immune checkpoint inhibitors
+dt = c(data[,54])[[1]]
+h = barplot(table(dt),
+            ylim = c(0, max(table(dt)) + 15),
+            xlab = " Immune checkpoint inhibitors",
+            xaxt='n', main = "",
+            col = c("#5F4B8BFF", "#E69A8DFF"))
+text(x = h, y = table(dt),
+     label =table(dt),
+     pos = 3, cex =1, col = "black")
+axis(side=1, at=h, labels = c("No", "Yes"))
+# 
+# # Lung-molGPA score
+dt = c(data[,55])[[1]]
+h = barplot(table(dt,  useNA = "ifany"),
+            ylim = c(0, max(table(dt)) + 15),
+            xlab = "2017 Lung-molGPA score",
+            xaxt='n', main = "",
+            col = "#2C5F2D")
+text(x = h, y = table(dt,  useNA = "ifany"),
+     label =table(dt,  useNA = "ifany"),
+     pos = 3, cex =1, col = "black")
+axis(side=1, at=h, labels = unique(dt)[order(unique(dt))])
+# 
+# # Lung-molGPA: 
+# # 2017年脑转移预测模型分级1（0-1.0），2（1.5-2.0）,3（2.5-3.0）,4(3.5-4.0) 分值越高，越低危
+dt = c(data[,56])[[1]]
+h = barplot(table(dt,  useNA = "ifany"),
+            ylim = c(0, max(table(dt)) + 15),
+            xlab = "2017 Lung-molGPA stage\nThe higher, the better",
+            xaxt='n', main = "",
+            col = "#2C5F2D")
+text(x = h, y = table(dt,  useNA = "ifany"),
+     label =table(dt,  useNA = "ifany"),
+     pos = 3, cex =1, col = "black")
+axis(side=1, at=h, labels = unique(dt)[order(unique(dt))])
+# 
+# 
+# # Novel molGPA score
+dt = c(data[,57])[[1]]
+h = barplot(table(dt,  useNA = "ifany"),
+            ylim = c(0, max(table(dt)) + 15),
+            xlab = "2019 Lung-molGPA score",
+            xaxt='n', main = "",
+            col = "#2C5F2D")
+text(x = h, y = table(dt,  useNA = "ifany"),
+     label =table(dt,  useNA = "ifany"),
+     pos = 3, cex =1, col = "black")
+axis(side=1, at=h, labels = unique(dt)[order(unique(dt))])
+# 
+# # Novel molGPA
+dt = c(data[,58])[[1]]
+h = barplot(table(dt,  useNA = "ifany"),
+            ylim = c(0, max(table(dt)) + 15),
+            xlab = "2019 Lung-molGPA stage\nThe higher, the better",
+            xaxt='n', main = "",
+            col = "#2C5F2D")
+text(x = h, y = table(dt,  useNA = "ifany"),
+     label =table(dt,  useNA = "ifany"),
+     pos = 3, cex =1, col = "black")
+axis(side=1, at=h, labels = unique(dt)[order(unique(dt))])
+```
+
+
+
+\newpage
+
+# Missing data and imputation
+
+| variable name                      | # of missing | Note                                               |
+|------------------------------------|--------------|----------------------------------------------------|
+| Overall survival time (month)      | 11           | Patients with death status = 2 (lost to follow-up) |
+| Lumbar puncture pressure              | 48           |          |
+| White_blood_cell     |     48        |          |
+| Protein         | 48            |          |
+| Glucose     | 48            |          |
+| Chloride | 48 | |
+| Enhancement                        | 3            |                                        |
+| Enhancement of spinal membrane | 4            |                                        |
+| Gene | 18 | |
+
+We deleted 11 patients who are lost to follow-up. After deleting the patients, we have 162 patients left.
+
+```{r, echo = FALSE}
+############### Remove the patient with lost follow-up ###########
+ind = which(c(data[,8])[[1]] == 2)
+data_all = data[-ind,]
+```
+
+For the other two variables with missing value, `mice` package is used.
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE, results = 'hide'}
+############# Imputation for missing values #######
+data_all = as.data.frame(data_all)
+dat <- as.data.frame(sapply(data_all, as.numeric))
+colnames(dat) = c("Patient_ID", 'Sex', "Age", "Smoke","Extracranial_metastases",
+                  "Median_time_dignosis_to_LC", 
+                  "Extracranial_metastasis_control",
+                  "status","time",
+                  "KPS_stage","KPS_score","Gene",
+                  "Headache", "nausea_vomiting",
+                  "Meningeal_irritation", "Mental_changes",
+                  "Cognitive_impairment","Epilepsy","Lalopathy","Ataxia",
+                  "Cranialnerves","Diplopia","Vision_loss","Hear_loss",
+                  "Dysphagia", "Facioplegia","spinal_nerve", "Paralysis",
+                  "Paresthdsia", "Pain", "UriAndDef", "RANO_Neurological_Assessment",
+                  "CSFpressure", "Lumbar_puncture_pressure", "White_blood_cell",
+                  "Protein", "Glucose","Chloride", "Image", "Enhancement",
+                  "Brain_metastases_number", "brain_metastases",
+                  "Hydrocephalus", "Enhancement_of_spinal_membrane",
+                  "Targeted_drugs_before_LM", "Chemotherapy_before_LM",
+                  "Bevacizumab_before_LM", "Target_stage", "Chemotherapy",
+                  "Operation", "Becacizumab", "Intrathecal",
+                  "Radio_therapy","Immune_checkpoint_inhibitors",
+                  "Lung_molGPA_score", "Lung_molGPA", "Novel_molGPA_score", "Novel_molGPA")
+
+set.seed(125) 
+tempData = mice(dat)
+completedData = complete(tempData, 1)
+
+##########-------------- done------------------ ###########
+```
+
+
+# Data transformation
+
+For analysis, we did the following variable transformation:
+
++ Age: dichotomize age with cutoff 65, age = 1 if > 65 
++ White blook cell: take log
++ Protein: take log
++ Glucose: take log
++ KPS score: minus mean
++ Lumbar puncture pressure: minus mean
+
+
+```{r, echo = FALSE}
+############## standardize or take log of the variables ######
+completedData$Sex = ifelse(completedData$Sex == 1, 0, 1)
+completedData$Age = ifelse(completedData$Age > 65, 0, 1) 
+completedData$White_blood_cell = log(completedData$White_blood_cell)
+completedData$Protein = log(completedData$Protein)
+completedData$Glucose = log(completedData$Glucose)
+completedData$Lumbar_puncture_pressure = completedData$Lumbar_puncture_pressure  - mean(completedData$Lumbar_puncture_pressure)
+completedData$KPS_score = completedData$KPS_score - mean(completedData$KPS_score)
+```
+
+# Split the data into two sets
+
+Training set: 80% ( = 130)
+Test set: 20% ( = 32)
+
+In the following analysis, we will use training set to identify the significant variables and fit the model. 
+
+\newpage
+
+# Univariate cox model
+
+```{r, echo = FALSE, results = 'hide'}
+########## Step 3: univariate analysis ###########
+data_to_fit = completedData[,-c(1,8,9,55,56,57,58)]
+names= colnames(data_to_fit)
+data_to_fit[,52] = completedData$time
+data_to_fit[,53] = completedData$status
+colnames(data_to_fit)[52] = "time"
+colnames(data_to_fit)[53] = "status"
+
+set.seed(100)
+training_id = sample(1:162, 130)
+testing_id = c(1:162)[-training_id]
+test_data = data_to_fit[testing_id,]
+data_to_fit = data_to_fit[training_id,]
+
+for (col in c(1:51)){
+  if (col %in% c(5, 8, 29, 31, 32, 33, 34, 35, 38)){
+    fit = coxph(Surv(time, status) ~ data_to_fit[,col], data = data_to_fit)
+  }else {
+    fit = coxph(Surv(time, status) ~ as.factor(data_to_fit[,col]), data = data_to_fit)
+  }
+  
+  s = summary(fit)
+  pVal = s$sctest[3]
+  print("------------------------------------------------------------------")
+  
+  print(paste('P-value for the log-rank test for variable', names[col], "is", pVal))
+  print(s)
+}
+```
+
+
+\newpage 
+
+
+# Multivariate cox model
+
+## With significant variables from univariate model:
+
+
+```{r, echo = FALSE, message=FALSE, results ='hide'}
+# cox model with univariate significant variables
+fit_sub = coxph(Surv(time, status) ~ Age + as.factor(Extracranial_metastasis_control) + as.factor(KPS_stage)  +  as.factor(Gene) +  RANO_Neurological_Assessment + Chloride + as.factor(Target_stage), data = data_to_fit)
+summary(fit_sub)
+```
+
+
+```{r, echo = FALSE, message=FALSE, results ='hide'}
+# cox model with univariate significant variables
+fit_sub_gene = coxph(Surv(time, status) ~ Age + as.factor(Extracranial_metastasis_control) + as.factor(KPS_stage)  +  as.factor(Gene) +  RANO_Neurological_Assessment + Chloride, data = data_to_fit)
+summary(fit_sub_gene)
+```
+
+
+```{r, echo = FALSE, message=FALSE, results ='hide'}
+# cox model with univariate significant variables
+fit_sub_target = coxph(Surv(time, status) ~ Age + as.factor(Extracranial_metastasis_control) + as.factor(KPS_stage)  +  RANO_Neurological_Assessment + Chloride + as.factor(Target_stage), data = data_to_fit)
+summary(fit_sub_target)
+```
+
+
+
+\newpage
+
+
+# 2021 molGPA and C-index
+
+```{r, echo = FALSE, results='hide'}
+train_2021 = train_2019 = train_2017 = test_2021 = test_2019 = test_2017 = rep(NA, 20)
+ind = 0
+for (seed in seq(from = 0, to = 1000, by = 10)){
+  ind = ind + 1
+  
+  data_to_fit = completedData[,-c(1,8,9,55,56,57,58)]
+  names= colnames(data_to_fit)
+  data_to_fit[,52] = completedData$time
+  data_to_fit[,53] = completedData$status
+  colnames(data_to_fit)[52] = "time"
+  colnames(data_to_fit)[53] = "status"
+  
+  set.seed(seed)
+  training_id = sample(1:162, 130)
+  testing_id = c(1:162)[-training_id]
+  test_data = data_to_fit[testing_id,]
+  data_to_fit = data_to_fit[training_id,]
+  
+  
+  ########### Training ##########
+  v0_2021 = ifelse(data_to_fit$Gene == 0, 0, 0.5)
+  
+  # control
+  v1_2021 = ifelse(data_to_fit$Extracranial_metastasis_control == 1, 0.5, 0)
+  
+  # KPS_score
+  ind1 = which(data_to_fit$KPS_score < 60)
+  ind2 = which(60 <= data_to_fit$KPS_score & data_to_fit$KPS_score <= 70)
+  ind3 = which(80 <= data_to_fit$KPS_score & data_to_fit$KPS_score <= 100)
+  v2_2021 = rep(NA, 130)
+  v2_2021[ind1] = 0
+  v2_2021[ind2] = 0.5
+  v2_2021[ind3] = 1
+  
+  # RANO
+  ind1 = which(data_to_fit$RANO_Neurological_Assessment > 5.75)
+  ind2 = which(2 < data_to_fit$RANO_Neurological_Assessment & data_to_fit$RANO_Neurological_Assessment <= 5.75)
+  ind3 = which(data_to_fit$RANO_Neurological_Assessment <= 2)
+  v3_2021 = rep(NA, 130)
+  v3_2021[ind1] = 0
+  v3_2021[ind2] = 0.5
+  v3_2021[ind3] = 1
+  
+  # target 
+  ind1 = which(data_to_fit$Target_stage == 0)
+  ind2 = which(data_to_fit$Target_stage == 1 | data_to_fit$Target_stage == 2)
+  ind3 = which(data_to_fit$Target_stage == 3)
+  v4_2021 = rep(NA, 130)
+  v4_2021[ind1] = 0
+  v4_2021[ind2] = 0.5
+  v4_2021[ind3] = 1
+  
+  
+  molGPA_2021 =  v0_2021+v1_2021 + v2_2021 + v3_2021 + v4_2021
+  
+  
+  c_index_2021 = concordance(Surv(time, status) ~ molGPA_2021, data = data_to_fit)
+  c_index_2017 = concordance(Surv(time, status) ~ completedData[training_id,]$Lung_molGPA_score, data = completedData[training_id,])
+  c_index_2019 = concordance(Surv(time, status) ~ completedData[training_id,]$Novel_molGPA_score, data = completedData[training_id,])
+  
+  train_2021[ind] = c_index_2021$concordance
+  train_2019[ind] = c_index_2019$concordance
+  train_2017[ind] = c_index_2017$concordance
+  
+  ########### Test ##########
+  v0_2021 = ifelse(test_data$Gene == 0, 0, 0.5)
+  
+  # control
+  v1_2021 = ifelse(test_data$Extracranial_metastasis_control == 1, 0.5, 0)
+  
+  # KPS_score
+  ind1 = which(test_data$KPS_score < 60)
+  ind2 = which(60 <= test_data$KPS_score & test_data$KPS_score <= 70)
+  ind3 = which(80 <= test_data$KPS_score & test_data$KPS_score <= 100)
+  v2_2021 = rep(NA, 32)
+  v2_2021[ind1] = 0
+  v2_2021[ind2] = 0.5
+  v2_2021[ind3] = 1
+  
+  # RANO
+  ind1 = which(test_data$RANO_Neurological_Assessment > 5.75)
+  ind2 = which(2 < test_data$RANO_Neurological_Assessment & test_data$RANO_Neurological_Assessment <= 5.75)
+  ind3 = which(test_data$RANO_Neurological_Assessment <= 2)
+  v3_2021 = rep(NA, 32)
+  v3_2021[ind1] = 0
+  v3_2021[ind2] = 0.5
+  v3_2021[ind3] = 1
+  
+  # target 
+  ind1 = which(test_data$Target_stage == 0)
+  ind2 = which(test_data$Target_stage == 1 | test_data$Target_stage == 2)
+  ind3 = which(test_data$Target_stage == 3)
+  v4_2021 = rep(NA, 32)
+  v4_2021[ind1] = 0
+  v4_2021[ind2] = 0.5
+  v4_2021[ind3] = 1
+  
+  
+  molGPA_2021_test =  v0_2021+v1_2021 + v2_2021 + v3_2021 + v4_2021
+  
+  
+  c_index_2021_test = concordance(Surv(time, status) ~ molGPA_2021_test, data = test_data)
+  c_index_2017_test = concordance(Surv(time, status) ~ completedData[testing_id,]$Lung_molGPA_score, data = completedData[testing_id,])
+  c_index_2019_test = concordance(Surv(time, status) ~ completedData[testing_id,]$Novel_molGPA_score, data = completedData[testing_id,])
+  
+  
+  test_2021[ind] = c_index_2021_test$concordance
+  test_2019[ind] = c_index_2019_test$concordance
+  test_2017[ind] = c_index_2017_test$concordance
+}
+mean(train_2021); round(quantile(train_2021, c(0.025, 0.975)),3)
+mean(train_2019); round(quantile(train_2019, c(0.025, 0.975)),3)
+mean(train_2017); round(quantile(train_2017, c(0.025, 0.975)),3)
+mean(test_2021); round(quantile(test_2021, c(0.025, 0.975)),3)
+mean(test_2019); round(quantile(test_2019, c(0.025, 0.975)),3)
+mean(test_2017); round(quantile(test_2017, c(0.025, 0.975)),3)
+```
+
+
+
+\newpage
+
+##  Kaplan-Meier curves for overall survival probability prediction of all 162 patients by group. 
+
+Group 1 (high risk group): molGPA_2021 = 0
+
+Group 2 (mediate risk group): molGPA_2021 = 0.5 or 1
+
+Group 3 (low risk group): molGPA_2021 >= 1.5
+
+```{r, echo = FALSE, message=FALSE, eval=FALSE}
+data_all = as.data.frame(data_all)
+dat <- as.data.frame(sapply(data_all, as.numeric))
+colnames(dat) = c("Patient_ID", 'Sex', "Age", "Smoke","Extracranial_metastases",
+                  "Median_time_dignosis_to_LC",
+                  "Extracranial_metastasis_control",
+                  "status","time",
+                  "KPS_stage","KPS_score","Gene",
+                  "Headache", "nausea_vomiting",
+                  "Meningeal_irritation", "Mental_changes",
+                  "Cognitive_impairment","Epilepsy","Lalopathy","Ataxia",
+                  "Cranialnerves","Diplopia","Vision_loss","Hear_loss",
+                  "Dysphagia", "Facioplegia","spinal_nerve", "Paralysis",
+                  "Paresthdsia", "Pain", "UriAndDef", "RANO_Neurological_Assessment",
+                  "CSFpressure", "Lumbar_puncture_pressure", "White_blood_cell",
+                  "Protein", "Glucose","Chloride", "Image", "Enhancement",
+                  "Brain_metastases_number", "brain_metastases",
+                  "Hydrocephalus", "Enhancement_of_spinal_membrane",
+                  "Targeted_drugs_before_LM", "Chemotherapy_before_LM",
+                  "Bevacizumab_before_LM", "Target_stage", "Chemotherapy",
+                  "Operation", "Becacizumab", "Intrathecal",
+                  "Radio_therapy","Immune_checkpoint_inhibitors",
+                  "Lung_molGPA_score", "Lung_molGPA", "Novel_molGPA_score", "Novel_molGPA")
+set.seed(100)
+tempData = mice(dat)
+completedData = complete(tempData, 1)
+completedData$Sex = ifelse(completedData$Sex == 1, 0, 1)
+data_to_fit = completedData[,-c(1,8,9,55,56,57,58)]
+names= colnames(data_to_fit)
+data_to_fit[,52] = completedData$time
+data_to_fit[,53] = completedData$status
+colnames(data_to_fit)[52] = "time"
+colnames(data_to_fit)[53] = "status"
+
+########### all ##########
+# control
+v1_2021 = ifelse(data_to_fit$Extracranial_metastasis_control == 1, 0.5, 0)
+
+# KPS_score
+ind1 = which(data_to_fit$KPS_score < 60)
+ind2 = which(60 <= data_to_fit$KPS_score & data_to_fit$KPS_score <= 70)
+ind3 = which(80 <= data_to_fit$KPS_score & data_to_fit$KPS_score <= 100)
+v2_2021 = rep(NA, 130)
+v2_2021[ind1] = 0
+v2_2021[ind2] = 0.5
+v2_2021[ind3] = 1
+
+# RANO
+ind1 = which(data_to_fit$RANO_Neurological_Assessment > 5.75)
+ind2 = which(2 < data_to_fit$RANO_Neurological_Assessment & data_to_fit$RANO_Neurological_Assessment <= 5.75)
+ind3 = which(data_to_fit$RANO_Neurological_Assessment <= 2)
+v3_2021 = rep(NA, 130)
+v3_2021[ind1] = 0
+v3_2021[ind2] = 0.5
+v3_2021[ind3] = 1
+
+# target
+ind1 = which(data_to_fit$Target_stage == 0)
+ind2 = which(data_to_fit$Target_stage == 1 | data_to_fit$Target_stage == 2)
+ind3 = which(data_to_fit$Target_stage == 3)
+v4_2021 = rep(NA, 130)
+v4_2021[ind1] = 0
+v4_2021[ind2] = 0.5
+v4_2021[ind3] = 1
+
+
+molGPA_2021 =  v1_2021 + v2_2021 + v3_2021 + v4_2021
+
+group1_ind = which(molGPA_2021 == 0)
+group2_ind = which(molGPA_2021 == 0.5 | molGPA_2021 == 1)
+group3_ind = which(molGPA_2021 >= 1.5)
+data_to_fit$group = rep(NA, dim(data_to_fit)[1])
+data_to_fit$group[group1_ind] = 1
+data_to_fit$group[group2_ind] = 2
+data_to_fit$group[group3_ind] = 3
+train_fit = survfit(Surv(time, status) ~ group, data = data_to_fit) # observed
+plot(train_fit, xlab="Time (Months)", ylab="Survival Probability",main="KM Survival Curves",
+     lty=1, col = c(2,3,4))
+legend("topright", inset=.05, c("Group 1 (high risk, GPA = 0)",
+                                "Group 2 (mediate risk, GPA = 0.5-1)",
+                                "Group 3 (low risk, GPA > 1.5)",
+                                "Observed",
+                                "Predicted"),
+       col = c(2,3,4,1,1), lty=c(1,1,1,1,2))
+
+# predicted
+cum_hazard_1 = basehaz(fit_sub_1)$hazard
+cum_hazard_2 = basehaz(fit_sub_2)$hazard
+cum_hazard_3 = basehaz(fit_sub_3)$hazard
+lines( basehaz(fit_sub_1)$time, exp(-cum_hazard_1), col = 2, lty = 2)
+lines( basehaz(fit_sub_2)$time, exp(-cum_hazard_2), col = 3, lty = 2)
+lines( basehaz(fit_sub_3)$time, exp(-cum_hazard_3), col = 4, lty = 2)
+```
+
+
+
+\newpage
+
+# Random survival forest
+
+## Significant varibles:
+
+Note: no dichotomization or standardization
+
+
+```{r, eval = FALSE, echo = FALSE}
+########## randomsurvivalforest/randomforest (RSF/RF) ######
+data_all = as.data.frame(data_all)
+dat <- as.data.frame(sapply(data_all, as.numeric))
+colnames(dat) = c("Patient_ID", 'Sex', "Age", "Smoke","Extracranial_metastases",
+                  "Median_time_dignosis_to_LC", 
+                  "Extracranial_metastasis_control",
+                  "status","time",
+                  "KPS_stage","KPS_score","Gene",
+                  "Headache", "nausea_vomiting",
+                  "Meningeal_irritation", "Mental_changes",
+                  "Cognitive_impairment","Epilepsy","Lalopathy","Ataxia",
+                  "Cranialnerves","Diplopia","Vision_loss","Hear_loss",
+                  "Dysphagia", "Facioplegia","spinal_nerve", "Paralysis",
+                  "Paresthdsia", "Pain", "UriAndDef", "RANO_Neurological_Assessment",
+                  "CSFpressure", "Lumbar_puncture_pressure", "White_blood_cell",
+                  "Protein", "Glucose","Chloride", "Image", "Enhancement",
+                  "Brain_metastases_number", "brain_metastases",
+                  "Hydrocephalus", "Enhancement_of_spinal_membrane",
+                  "Targeted_drugs_before_LM", "Chemotherapy_before_LM",
+                  "Bevacizumab_before_LM", "Target_stage", "Chemotherapy",
+                  "Operation", "Becacizumab", "Intrathecal",
+                  "Radio_therapy","Immune_checkpoint_inhibitors",
+                  "Lung_molGPA_score", "Lung_molGPA", "Novel_molGPA_score", "Novel_molGPA")
+set.seed(100)
+tempData = mice(dat)
+completedData = complete(tempData, 1)
+completedData$Sex = ifelse(completedData$Sex == 1, 0, 1)
+data_to_fit = completedData[,-c(1,8,9,55,56,57,58)]
+names= colnames(data_to_fit)
+data_to_fit[,52] = completedData$time
+data_to_fit[,53] = completedData$status
+colnames(data_to_fit)[52] = "time"
+colnames(data_to_fit)[53] = "status"
+
+set.seed(100)
+training_id = sample(1:162, 130)
+testing_id = c(1:162)[-training_id]
+test_data = data_to_fit[testing_id,]
+data_to_fit = data_to_fit[training_id,]
+
+set.seed(100)
+fit_RSF <- rfsrc(Surv(time, status) ~ as.factor(Sex) +
+                   Age +  as.factor(Smoke) +
+                   as.factor(Extracranial_metastases) +
+                   Median_time_dignosis_to_LC +
+                   as.factor(Extracranial_metastasis_control) +
+                   as.factor(KPS_stage) +
+                   KPS_score +
+                   as.factor(Gene) +
+                   as.factor(Headache) +
+                   as.factor(nausea_vomiting) +
+                   as.factor(Meningeal_irritation) +
+                   as.factor(Mental_changes) +
+                   as.factor(Cognitive_impairment) +
+                   as.factor(Epilepsy) +
+                   as.factor(Lalopathy) +
+                   as.factor(Ataxia) +
+                   as.factor(Cranialnerves) +
+                   as.factor(Diplopia) +
+                   as.factor(Vision_loss) +
+                   as.factor(Hear_loss) +
+                   as.factor(Dysphagia) +
+                   as.factor(Facioplegia) +
+                   as.factor(spinal_nerve) +
+                   as.factor(Paralysis) +
+                   as.factor(Paresthdsia) +
+                   as.factor(Pain) +
+                   as.factor(UriAndDef) +
+                   RANO_Neurological_Assessment +
+                   as.factor(CSFpressure) +
+                   Lumbar_puncture_pressure +
+                   White_blood_cell +
+                   Protein +
+                   Glucose +
+                   Chloride +
+                   as.factor(Image) +
+                   as.factor(Enhancement) +
+                   Brain_metastases_number +
+                   as.factor(brain_metastases) +
+                   as.factor(Hydrocephalus) +
+                   as.factor(Enhancement_of_spinal_membrane) +
+                   as.factor(Targeted_drugs_before_LM) +
+                   as.factor(Chemotherapy_before_LM) +
+                   as.factor(Bevacizumab_before_LM) +
+                   as.factor(Target_stage) +
+                   as.factor(Chemotherapy) +
+                   as.factor(Operation) +
+                   as.factor(Becacizumab) +
+                   as.factor(Intrathecal) +
+                   as.factor(Radio_therapy) + 
+                   as.factor(Immune_checkpoint_inhibitors), 
+                 data = data_to_fit,importance = TRUE, block.size=1)
+
+predict = predict.rfsrc(fit_RSF, newdata = test_data)
+
+
+##########-------------- done------------------ ###########
+```
+
+
+
+## Top variables
+```{r echo=FALSE, eval = FALSE}
+set.seed(125)
+fit_RSF_sub_Stage <- rfsrc(Surv(time, status) ~ as.factor(KPS_stage) + 
+                             RANO_Neurological_Assessment +
+                             as.factor(Target_stage) + 
+                             Chloride + 
+                             as.factor(Extracranial_metastasis_control)  +
+                             Age + Gene + as.factor(Chemotherapy_before_LM) + Median_time_dignosis_to_LC +
+                             Brain_metastases_number + Glucose, 
+                           data = data_to_fit,importance = TRUE, block.size=1)
+plot(fit_RSF_sub_Stage)
+
+## added by Jessie on 05/05/2022
+# To create a new figure suggested by reviewer 1
+jk.obj <- subsample(fit_RSF_sub_Stage)
+par(oma = c(0.5, 10, 0.5, 0.5))
+par(cex.axis = 1.0, cex.lab = 1.0, cex.main = 1.0, mar = c(6.0,17,1,1), mgp = c(4, 1, 0))
+plot(jk.obj, xlab = "Variable Importance (x 100)", cex = 1.2)
+
+predict_sub_stage = predict.rfsrc(fit_RSF_sub_Stage, newdata = test_data)
+
+c_index_list_test = c_index_list_training = c()
+ind = 0
+for (seed in seq(from = 0, to = 1000, by = 10)){
+  print(ind)
+  ind = ind + 1
+  
+  data_to_fit = completedData[,-c(1,8,9,55,56,57,58)]
+  names= colnames(data_to_fit)
+  data_to_fit[,52] = completedData$time
+  data_to_fit[,53] = completedData$status
+  colnames(data_to_fit)[52] = "time"
+  colnames(data_to_fit)[53] = "status"
+  
+  set.seed(seed)
+  training_id = sample(1:162, 130)
+  testing_id = c(1:162)[-training_id]
+  test_data = data_to_fit[testing_id,]
+  data_to_fit = data_to_fit[training_id,]
+  
+
+  fit_RSF_sub_Stage <- rfsrc(Surv(time, status) ~ as.factor(KPS_stage) + 
+
+                               RANO_Neurological_Assessment +
+                               as.factor(Target_stage) + 
+                               Chloride + 
+                               as.factor(Extracranial_metastasis_control)  +
+                               Age + Gene + as.factor(Chemotherapy_before_LM) + Median_time_dignosis_to_LC +
+                               Brain_metastases_number + Glucose, 
+
+  
+  c_index_list_training[ind] = fit_RSF_sub_Stage$err.rate[500]
+  
+  predict_sub_stage = predict.rfsrc(fit_RSF_sub_Stage, newdata = test_data)
+  c_index_list_test[ind] = predict_sub_stage$err.rate[500]
+}
+quantile(1- c_index_list_training, c(0.025, 0.5, 0.975))
+quantile(1 - c_index_list_test, c(0.025, 0.5, 0.975))
+
+
+
+```
+
+
